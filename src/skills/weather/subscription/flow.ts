@@ -1,7 +1,7 @@
-import type { DingtalkPlace, DingtalkWeatherSubscription } from "./subscription-types.js";
-import { deleteDingtalkSubscription, getDingtalkSubscription, upsertDingtalkSubscription } from "./subscription-store.js";
-import { fetchForecast, formatForecastSummaryText, formatForecastText, geocodePlace } from "./open-meteo.js";
-import { parsePlaceAndDailyTime } from "./subscription-nlp.js";
+import type { DingtalkPlace, DingtalkWeatherSubscription } from "./types.js";
+import { deleteDingtalkSubscription, getDingtalkSubscription, upsertDingtalkSubscription } from "./store.js";
+import { fetchForecast, formatForecastSummaryText, formatForecastText, geocodePlace } from "../open-meteo.js";
+import { parsePlaceAndDailyTime } from "./nlp.js";
 
 type LogLike = {
   info?: (msg: string) => void;

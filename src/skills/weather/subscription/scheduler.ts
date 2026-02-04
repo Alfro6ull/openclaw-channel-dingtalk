@@ -1,12 +1,15 @@
-import { readDingtalkSubscriptionStore, writeDingtalkSubscriptionStore } from "./subscription-store.js";
-import { fetchForecast, formatForecastSummaryText } from "./open-meteo.js";
-import type { DingtalkOpenApiClient } from "./dingtalk-openapi.js";
-import type { DingtalkWeatherSubscription } from "./subscription-types.js";
+import { readDingtalkSubscriptionStore, writeDingtalkSubscriptionStore } from "./store.js";
+import { fetchForecast, formatForecastSummaryText } from "../open-meteo.js";
+import type { DingtalkWeatherSubscription } from "./types.js";
 
 type LogLike = {
   info?: (msg: string) => void;
   warn?: (msg: string) => void;
   error?: (msg: string) => void;
+};
+
+type DingtalkOpenApiLike = {
+  sendTextToUser: (params: { userId: string; text: string }) => Promise<void>;
 };
 
 function parseHHmm(time: string): { hour: number; minute: number } | null {
@@ -87,7 +90,7 @@ function isDueNow(params: {
 export function startDingtalkWeatherSubscriptionScheduler(params: {
   accountId: string;
   tickSeconds?: number;
-  openApi: DingtalkOpenApiClient;
+  openApi: DingtalkOpenApiLike;
   abortSignal: AbortSignal;
   log?: LogLike;
 }): void {

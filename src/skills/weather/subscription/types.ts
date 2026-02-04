@@ -1,3 +1,5 @@
+// 天气订阅相关类型定义。
+
 export type DingtalkPlace = {
   query: string;
   label: string;

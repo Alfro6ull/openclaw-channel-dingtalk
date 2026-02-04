@@ -6,8 +6,8 @@ import axios from "axios";
 import type { DingtalkConfig, ResolvedDingtalkAccount } from "./types.js";
 import { DingtalkOpenApiClient } from "./dingtalk-openapi.js";
 import { getDingtalkRuntime } from "./runtime.js";
-import { createDingtalkSubscriptionFlow } from "./subscription-flow.js";
-import { startDingtalkWeatherSubscriptionScheduler } from "./subscription-scheduler.js";
+import { startDingtalkWeatherSubscriptionScheduler } from "./skills/weather/index.js";
+import { rememberDingtalkUserForSession } from "./skills/weather/session-state.js";
 
 const meta = {
   id: "dingtalk",
@@ -146,11 +146,6 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
       const robotCode = config.robotCode?.trim() || clientId;
       const subscriptionTickSeconds = config.subscription?.tickSeconds;
 
-      const subscriptionFlow = createDingtalkSubscriptionFlow({
-        accountId: ctx.account.accountId,
-        log: ctx.log,
-      });
-
       // 启动订阅调度器（尽力而为）。如果缺少 robotCode，则保留聊天能力，但禁用订阅推送。
       if (robotCode) {
         const openApi = new DingtalkOpenApiClient({
@@ -203,16 +198,6 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
             return;
           }
 
-          // 订阅流程（本地处理）。若命中订阅指令，则不再交给模型处理。
-          const userId = msg.senderStaffId?.trim() || "";
-          if (typeof text === "string" && text.trim() && userId) {
-            const result = await subscriptionFlow.handleMessage({ userId, text });
-            if (result.handled) {
-              await replyViaSessionWebhook({ sessionWebhook, text: result.reply });
-              return;
-            }
-          }
-
           const core = getDingtalkRuntime();
           const cfg = ctx.cfg as OpenClawConfig;
 
@@ -235,7 +220,7 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
 
           const rawBody = text || "(non-text message)";
           const styleHint =
-            "请用自然、简洁的中文回复（不要使用emoji）；不要编造未发生的对话或系统日志；不确定就直接说不知道。";
+            "请用自然、简洁的中文回复（不要使用emoji）；不要编造未发生的对话或系统日志；不确定就直接说不知道。你可以调用工具来查询真实天气数据、创建/取消订阅。";
           const body = core.channel.reply.formatAgentEnvelope({
             channel: "DingTalk",
             from: msg.senderNick || msg.senderStaffId || msg.senderId || "dingtalk-user",
@@ -243,6 +228,14 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
             envelope: core.channel.reply.resolveEnvelopeFormatOptions(cfg),
             body: `${styleHint}\n\n${rawBody}`,
           });
+
+          // 记录 “sessionKey -> userId” 的映射，供 agent 工具推断订阅归属。
+          const staffId = msg.senderStaffId?.trim();
+          const fallbackId = msg.senderId?.trim();
+          const userId = staffId || fallbackId || "";
+          if (userId) {
+            rememberDingtalkUserForSession({ sessionKey: route.sessionKey, userId });
+          }
 
           const ctxPayload = core.channel.reply.finalizeInboundContext({
             Body: body,

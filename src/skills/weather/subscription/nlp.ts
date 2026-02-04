@@ -1,3 +1,5 @@
+// 从自然语言里尽量提取：地点 + 每天 HH:mm（按地点时区理解）。
+
 const ZH_DIGIT: Record<string, number> = {
   零: 0,
   〇: 0,

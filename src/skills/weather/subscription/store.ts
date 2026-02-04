@@ -3,8 +3,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { getDingtalkRuntime } from "./runtime.js";
-import type { DingtalkSubscriptionStoreV1, DingtalkWeatherSubscription } from "./subscription-types.js";
+import { getDingtalkRuntime } from "../../../runtime.js";
+import type { DingtalkSubscriptionStoreV1, DingtalkWeatherSubscription } from "./types.js";
 
 const STORE_VERSION = 1 as const;
 
@@ -136,4 +136,3 @@ export async function deleteDingtalkSubscription(params: {
   });
   return existed;
 }
-
