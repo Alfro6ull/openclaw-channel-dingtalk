@@ -97,4 +97,3 @@ export function clearWeatherPendingSelection(params: { sessionKey?: string }) {
   if (!existing) return;
   sessions.set(sessionKey, { ...existing, lastSeenAt: now, weatherPending: undefined });
 }
-

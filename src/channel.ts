@@ -4,10 +4,13 @@ import { DWClient, TOPIC_ROBOT } from "dingtalk-stream";
 import axios from "axios";
 
 import type { DingtalkConfig, ResolvedDingtalkAccount } from "./types.js";
-import { DingtalkOpenApiClient } from "./dingtalk-openapi.js";
+import { DingtalkOpenApiClient } from "./dingtalk/openapi.js";
 import { getDingtalkRuntime } from "./runtime.js";
-import { startDingtalkWeatherSubscriptionScheduler } from "./skills/weather/index.js";
-import { rememberDingtalkUserForSession } from "./skills/weather/session-state.js";
+import {
+  createDingtalkWeatherToolsFactory,
+  startDingtalkWeatherSubscriptionScheduler,
+} from "./weather/index.js";
+import { peekWeatherPendingSelection, rememberDingtalkUserForSession } from "./weather/session-state.js";
 
 const meta = {
   id: "dingtalk",
@@ -41,6 +44,21 @@ function waitForAbort(signal: AbortSignal): Promise<void> {
 
 function randomId(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function parseSelectionIndex(text: string): number | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  // 仅接受两种形式：
+  // 1) "2"
+  // 2) "2) 成都 · 四川 · 中国" / "2）成都..."
+  const m = trimmed.match(/^(\d{1,2})\s*$/) ?? trimmed.match(/^(\d{1,2})\s*[)）]\s*.+$/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isInteger(n)) return null;
+  if (n < 1 || n > 10) return null;
+  return n;
 }
 
 type StreamCallback = {
@@ -202,11 +220,17 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
           const cfg = ctx.cfg as OpenClawConfig;
 
           // 基于“是谁在跟我们说话”创建 route（agent + sessionKey）。
-          const peerId =
-            msg.conversationId?.trim() ||
-            msg.senderStaffId?.trim() ||
-            msg.senderId?.trim() ||
-            sessionWebhook;
+          const conversationId = msg.conversationId?.trim() || "";
+          const senderStaffId = msg.senderStaffId?.trim() || "";
+          const senderId = msg.senderId?.trim() || "";
+
+          // 真实会话标识：用于回消息/路由元信息。
+          const deliveryTo = conversationId || senderStaffId || senderId || sessionWebhook;
+
+          // 会话隔离键：尽量避免群聊里多人共用一个 session（数字选择/候选列表会串）。
+          // 私聊也不受影响（同一个人 senderStaffId 固定）。
+          const sessionPeerId =
+            conversationId && senderStaffId ? `${conversationId}:${senderStaffId}` : deliveryTo;
 
           const route = core.channel.routing.resolveAgentRoute({
             cfg,
@@ -214,46 +238,93 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
             accountId: ctx.account.accountId,
             peer: {
               kind: "direct",
-              id: peerId,
+              id: sessionPeerId,
             },
           });
 
           const rawBody = text || "(non-text message)";
-          const styleHint =
-            "请用自然、简洁的中文回复（不要使用emoji）；不要编造未发生的对话或系统日志；不确定就直接说不知道。你可以调用工具来查询真实天气数据、创建/取消订阅。";
           const body = core.channel.reply.formatAgentEnvelope({
             channel: "DingTalk",
-            from: msg.senderNick || msg.senderStaffId || msg.senderId || "dingtalk-user",
+            from: msg.senderNick || senderStaffId || senderId || "dingtalk-user",
             timestamp: Date.now(),
             envelope: core.channel.reply.resolveEnvelopeFormatOptions(cfg),
-            body: `${styleHint}\n\n${rawBody}`,
+            // 不要把规则/提示词塞进用户消息；规则通过 before_agent_start hook 注入。
+            body: rawBody,
           });
 
           // 记录 “sessionKey -> userId” 的映射，供 agent 工具推断订阅归属。
-          const staffId = msg.senderStaffId?.trim();
-          const fallbackId = msg.senderId?.trim();
-          const userId = staffId || fallbackId || "";
+          const userId = senderStaffId || senderId || "";
           if (userId) {
             rememberDingtalkUserForSession({ sessionKey: route.sessionKey, userId });
+          }
+
+          // 防呆：当用户只回复 “2” 或 “2) xxx” 且当前会话存在待选择的候选项时，
+          // 直接执行 pick_place 工具，避免模型生成不完整 JSON 导致工具调用失败。
+          const selectionIndex = typeof text === "string" ? parseSelectionIndex(text) : null;
+          if (selectionIndex !== null) {
+            const pending = peekWeatherPendingSelection({ sessionKey: route.sessionKey });
+            if (pending) {
+              try {
+                const toolFactory = createDingtalkWeatherToolsFactory({ log: ctx.log });
+                const tools = toolFactory({
+                  sessionKey: route.sessionKey,
+                  agentAccountId: route.accountId,
+                  messageChannel: "dingtalk",
+                  config: cfg,
+                  sandboxed: false,
+                } as any);
+                const pickTool = tools.find((tool: any) => tool?.name === "dingtalk_weather_pick_place");
+                if (pickTool) {
+                  const result = await pickTool.execute(`manual-${randomId()}`, { index: selectionIndex }, ctx.abortSignal);
+                  const replyText = Array.isArray(result?.content)
+                    ? result.content
+                        .filter((x: any) => x?.type === "text" && typeof x?.text === "string")
+                        .map((x: any) => String(x.text))
+                        .join("\n")
+                    : "";
+                  if (replyText.trim()) {
+                    await replyViaSessionWebhook({ sessionWebhook, text: replyText });
+                    return;
+                  }
+                }
+
+                // 有 pending 但没能完成 pick_place：不要把“纯数字选择”丢给模型（容易触发半截 JSON 工具调用）。
+                await replyViaSessionWebhook({
+                  sessionWebhook,
+                  text: `我收到了你的选择（${selectionIndex}），但我这边没有取到可选地点列表了。请重新发一次地点，例如：成都 / 上海浦东。`,
+                });
+                return;
+              } catch (err: any) {
+                ctx.log?.warn?.(
+                  `[dingtalk] numeric selection fast-path failed: ${String(err?.message ?? err)}`
+                );
+
+                await replyViaSessionWebhook({
+                  sessionWebhook,
+                  text: `我收到了你的选择（${selectionIndex}），但处理时出错了。请重新发一次地点，例如：成都 / 上海浦东。`,
+                });
+                return;
+              }
+            }
           }
 
           const ctxPayload = core.channel.reply.finalizeInboundContext({
             Body: body,
             RawBody: rawBody,
             CommandBody: rawBody,
-            From: `dingtalk:${msg.senderStaffId || msg.senderId || "unknown"}`,
-            To: `dingtalk:${peerId}`,
+            From: `dingtalk:${senderStaffId || senderId || "unknown"}`,
+            To: `dingtalk:${deliveryTo}`,
             SessionKey: route.sessionKey,
             AccountId: route.accountId,
             ChatType: "direct",
             SenderName: msg.senderNick,
-            SenderId: msg.senderStaffId || msg.senderId,
+            SenderId: senderStaffId || senderId,
             Provider: "dingtalk",
             Surface: "dingtalk",
             MessageSid: msg.msgId || messageId || randomId(),
             Timestamp: Date.now(),
             OriginatingChannel: "dingtalk",
-            OriginatingTo: `dingtalk:${peerId}`,
+            OriginatingTo: `dingtalk:${deliveryTo}`,
             CommandAuthorized: true,
           });
 

@@ -43,6 +43,14 @@ function toolText(text: string, details: unknown = {}) {
   };
 }
 
+function toolJson(payload: unknown) {
+  const text = JSON.stringify(payload, null, 2);
+  return {
+    content: [{ type: "text" as const, text }],
+    details: payload,
+  };
+}
+
 async function fetchSummary(place: DingtalkPlace, title?: string) {
   const forecast = await fetchForecast({ place });
   return formatForecastSummaryText({ place, forecast, title: title ?? "天气预览" });
@@ -126,11 +134,20 @@ export function createDingtalkWeatherToolsFactory(params: { log?: LogLike }) {
             });
           }
           if (resolved.kind === "choose") {
-            return toolText(`我找到了多个“${placeQuery}”，你指的是哪一个？回复编号即可：\n${formatPlaceChoices(resolved.places)}`, {
+            return toolJson({
               ok: false,
-              reason: "place_ambiguous",
-              choices: resolved.places,
+              status: "need_user_choice",
+              kind: "place",
+              query: placeQuery,
+              choices: resolved.places.map((p, idx) => ({
+                index: idx + 1,
+                label: p.label,
+                timezone: p.timezone,
+                latitude: p.latitude,
+                longitude: p.longitude,
+              })),
               nextTool: "dingtalk_weather_pick_place",
+              note: "地点存在歧义。请把 choices 列表展示给用户并询问编号；不要代替用户选择，也不要只回复数字。",
             });
           }
           place = resolved.place;
@@ -183,11 +200,20 @@ export function createDingtalkWeatherToolsFactory(params: { log?: LogLike }) {
             });
           }
           if (resolved.kind === "choose") {
-            return toolText(`我找到了多个“${placeQuery}”，你指的是哪一个？回复编号即可：\n${formatPlaceChoices(resolved.places)}`, {
+            return toolJson({
               ok: false,
-              reason: "place_ambiguous",
-              choices: resolved.places,
+              status: "need_user_choice",
+              kind: "place",
+              query: placeQuery,
+              choices: resolved.places.map((p, idx) => ({
+                index: idx + 1,
+                label: p.label,
+                timezone: p.timezone,
+                latitude: p.latitude,
+                longitude: p.longitude,
+              })),
               nextTool: "dingtalk_weather_pick_place",
+              note: "地点存在歧义。请把 choices 列表展示给用户并询问编号；不要代替用户选择，也不要只回复数字。",
             });
           }
           place = resolved.place;
@@ -255,16 +281,22 @@ export function createDingtalkWeatherToolsFactory(params: { log?: LogLike }) {
         }
 
         if (resolved.kind === "choose") {
-          return toolText(
-            `我找到了多个“${parsed.placeQuery}”，你想订阅哪一个？回复编号即可（我会每天 ${parsed.timeHHmm} 推送）：\n${formatPlaceChoices(resolved.places)}`,
-            {
-              ok: false,
-              reason: "place_ambiguous",
-              timeHHmm: parsed.timeHHmm,
-              choices: resolved.places,
-              nextTool: "dingtalk_weather_pick_place",
-            },
-          );
+          return toolJson({
+            ok: false,
+            status: "need_user_choice",
+            kind: "place",
+            query: parsed.placeQuery,
+            schedule: { type: "daily", time: parsed.timeHHmm },
+            choices: resolved.places.map((p, idx) => ({
+              index: idx + 1,
+              label: p.label,
+              timezone: p.timezone,
+              latitude: p.latitude,
+              longitude: p.longitude,
+            })),
+            nextTool: "dingtalk_weather_pick_place",
+            note: `地点存在歧义。请把 choices 列表展示给用户并询问编号；用户选定后，再继续订阅（每天 ${parsed.timeHHmm}）。不要代替用户选择，也不要只回复数字。`,
+          });
         }
 
         const sub = await upsertSubscription({
@@ -342,7 +374,7 @@ export function createDingtalkWeatherToolsFactory(params: { log?: LogLike }) {
       name: "dingtalk_weather_pick_place",
       label: "选择地点",
       description:
-        "当地点出现多个候选项时，用序号选择并继续执行上一件事（查天气/查详情/订阅）。",
+        "当地点出现多个候选项时，用序号选择并继续执行上一件事（查天气/查详情/订阅）。当用户只回复“1/2/3”时应调用本工具。",
       parameters: {
         type: "object",
         additionalProperties: false,
