@@ -1,0 +1,10 @@
+{
+  "id": "dingtalk",
+  "channels": ["dingtalk"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
+

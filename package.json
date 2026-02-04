@@ -1,0 +1,25 @@
+{
+  "name": "@local/dingtalk",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenClaw DingTalk channel plugin (skeleton)",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "dingtalk-stream": "^2.1.4"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "installDependencies": true,
+    "channel": {
+      "id": "dingtalk",
+      "label": "DingTalk",
+      "selectionLabel": "DingTalk (钉钉)",
+      "docsPath": "/channels/dingtalk",
+      "docsLabel": "dingtalk",
+      "blurb": "DingTalk enterprise messaging (skeleton plugin).",
+      "aliases": ["ding"],
+      "order": 80
+    }
+  }
+}
