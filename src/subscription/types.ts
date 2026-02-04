@@ -1,12 +1,6 @@
 // 天气订阅相关类型定义。
 
-export type DingtalkPlace = {
-  query: string;
-  label: string;
-  latitude: number;
-  longitude: number;
-  timezone: string;
-};
+import type { DingtalkPlace } from "../weather/types.js";
 
 export type DingtalkDailySchedule = {
   type: "daily";

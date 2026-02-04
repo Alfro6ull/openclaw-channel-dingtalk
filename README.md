@@ -2,7 +2,8 @@
 
   可用功能：
     - webchat
-    - 天气订阅 孩子有点呆傻不建议使用
+    - 天气查询 / 天气订阅
+    - 一次性提醒（闹钟）
 
 ## 安装
 
@@ -42,6 +43,10 @@ channels:
     # 订阅调度 tick 间隔（秒），默认 60
     subscription:
       tickSeconds: 60
+    # 提醒调度 tick 间隔（秒），默认 30；defaultTimezone 默认 Asia/Shanghai
+    reminder:
+      tickSeconds: 30
+      defaultTimezone: "Asia/Shanghai"
 ```
 
 ### CLI 写入 `~/.openclaw/openclaw.json`）
@@ -73,12 +78,21 @@ channels:
 - 取消：发送 `取消订阅` 或 `退订`
 - 退出订阅流程：发送 `取消`
 
+### 提醒（闹钟）
+
+- 创建提醒（支持自然语言）：
+  - `四点四十的时候叫我一下`
+  - `18:00 提醒我下班`
+  - `明天 9点 提醒我开会`
+- 查看提醒：发送 `我的提醒`
+- 取消提醒：发送 `取消提醒 <id>`（id 会在“我的提醒”里展示）
+
 ## 权限（补充说明）
 
 本插件需要两类能力：
 
 1) **Stream 接入**（接收消息/事件推送）  
-2) **OpenAPI 主动发消息**（用于“订阅定时推送”，不能依赖 sessionWebhook）
+2) **OpenAPI 主动发消息**（用于“订阅定时推送 / 到点提醒”，不能依赖 sessionWebhook）
 
 - 获取企业内部应用 `accessToken`（用于 OpenAPI 调用）
 - 企业内机器人发送消息权限（用于主动推送到“人与机器人会话”）

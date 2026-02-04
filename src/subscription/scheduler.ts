@@ -1,6 +1,7 @@
 import { readDingtalkSubscriptionStore, writeDingtalkSubscriptionStore } from "./store.js";
-import { fetchForecast, formatForecastSummaryText } from "../open-meteo.js";
+import { fetchForecast, formatForecastSummaryText } from "../weather/open-meteo.js";
 import type { DingtalkWeatherSubscription } from "./types.js";
+import { getZonedParts } from "../time/zoned.js";
 
 type LogLike = {
   info?: (msg: string) => void;
@@ -20,47 +21,6 @@ function parseHHmm(time: string): { hour: number; minute: number } | null {
   if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
   return { hour, minute };
-}
-
-function isValidTimeZone(timeZone: string): boolean {
-  try {
-    
-    new Intl.DateTimeFormat("en-US", { timeZone }).format();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function getZonedParts(date: Date, timeZone: string): {
-  year: string;
-  month: string;
-  day: string;
-  hour: string;
-  minute: string;
-} {
-  const tz = isValidTimeZone(timeZone) ? timeZone : "UTC";
-  const fmt = new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-  const parts = fmt.formatToParts(date);
-  const lookup: Record<string, string> = {};
-  for (const p of parts) {
-    if (p.type !== "literal") lookup[p.type] = p.value;
-  }
-  return {
-    year: lookup.year ?? "1970",
-    month: lookup.month ?? "01",
-    day: lookup.day ?? "01",
-    hour: lookup.hour ?? "00",
-    minute: lookup.minute ?? "00",
-  };
 }
 
 function computeLocalDateKey(parts: { year: string; month: string; day: string }): string {

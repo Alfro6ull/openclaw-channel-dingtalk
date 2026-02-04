@@ -1,6 +1,6 @@
 import axios from "axios";
 
-import type { DingtalkPlace } from "./subscription/types.js";
+import type { DingtalkPlace } from "./types.js";
 
 // 定义 Open-Meteo 的响应模型
 type OpenMeteoGeocodingResult = {

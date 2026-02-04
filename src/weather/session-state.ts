@@ -1,4 +1,4 @@
-import type { DingtalkPlace } from "./subscription/types.js";
+import type { DingtalkPlace } from "./types.js";
 
 export type WeatherPendingAction =
   | { kind: "now" }
@@ -12,7 +12,6 @@ export type WeatherPendingSelection = {
 };
 
 type SessionRecord = {
-  userId?: string;
   lastSeenAt: number;
   weatherPending?: WeatherPendingSelection;
 };
@@ -24,33 +23,6 @@ function sweep(now: number) {
   for (const [key, value] of sessions.entries()) {
     if (now - value.lastSeenAt > SESSION_TTL_MS) sessions.delete(key);
   }
-}
-
-export function rememberDingtalkUserForSession(params: { sessionKey: string; userId: string }) {
-  const sessionKey = params.sessionKey.trim();
-  const userId = params.userId.trim();
-  if (!sessionKey || !userId) return;
-
-  const now = Date.now();
-  sweep(now);
-  const existing = sessions.get(sessionKey);
-  sessions.set(sessionKey, {
-    ...existing,
-    userId,
-    lastSeenAt: now,
-  });
-}
-
-export function resolveDingtalkUserId(params: { sessionKey?: string }): string | null {
-  const sessionKey = params.sessionKey?.trim() || "";
-  if (!sessionKey) return null;
-
-  const now = Date.now();
-  sweep(now);
-  const existing = sessions.get(sessionKey);
-  if (!existing?.userId) return null;
-  existing.lastSeenAt = now;
-  return existing.userId;
 }
 
 export function setWeatherPendingSelection(params: {

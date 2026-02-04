@@ -10,7 +10,9 @@ import {
   createDingtalkWeatherToolsFactory,
   startDingtalkWeatherSubscriptionScheduler,
 } from "./weather/index.js";
-import { peekWeatherPendingSelection, rememberDingtalkUserForSession } from "./weather/session-state.js";
+import { rememberDingtalkUserForSession } from "./session/user.js";
+import { peekWeatherPendingSelection } from "./weather/session-state.js";
+import { createDingtalkReminderToolsFactory, startDingtalkReminderScheduler } from "./reminder/index.js";
 
 const meta = {
   id: "dingtalk",
@@ -59,6 +61,34 @@ function parseSelectionIndex(text: string): number | null {
   if (!Number.isInteger(n)) return null;
   if (n < 1 || n > 10) return null;
   return n;
+}
+
+function looksLikeReminderCommand(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+
+  // 天气相关交给 weather 处理，别误触发提醒。
+  if (/(天气|温度|几度|下雨|雨吗|湿度|风|紫外线|预报|详情)/.test(t)) return false;
+
+  // 关键词 + “看起来像时间”的线索（点/冒号/下午等）。
+  const hasReminderKeyword = /(提醒|叫我|闹钟|下班)/.test(t);
+  const hasTimeClue = /(\d{1,2}\s*:\s*\d{1,2})|点|凌晨|早上|上午|中午|下午|晚上|傍晚|夜里/.test(t);
+  return hasReminderKeyword && hasTimeClue;
+}
+
+function sanitizeAgentReply(text: string): string {
+  const t = text.trim();
+  if (!t) return text;
+  if (/Unexpected end of JSON input/.test(t) || /after property value in JSON/.test(t) || /Expected .* in JSON/.test(t)) {
+    return (
+      "我刚才没把你的意思解析清楚。\n" +
+      "你可以这样说：\n" +
+      "- 成都天气 / 成都天气详情\n" +
+      "- 四点四十叫我一下 / 18:00 提醒我下班\n" +
+      "- 订阅 成都 10:20（每天推送天气）"
+    );
+  }
+  return text;
 }
 
 type StreamCallback = {
@@ -125,6 +155,14 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
             tickSeconds: { type: "integer", minimum: 10, maximum: 3600 },
           },
         },
+        reminder: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            tickSeconds: { type: "integer", minimum: 10, maximum: 3600 },
+            defaultTimezone: { type: "string" },
+          },
+        },
         connectionMode: { type: "string", enum: ["stream", "webhook"] },
         webhookPath: { type: "string" },
         webhookPort: { type: "integer", minimum: 1 },
@@ -163,6 +201,8 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
       // 很多企业内部应用的 appKey 和 robotCode 值相同，但这里仍然保持可配置。
       const robotCode = config.robotCode?.trim() || clientId;
       const subscriptionTickSeconds = config.subscription?.tickSeconds;
+      const reminderTickSeconds = config.reminder?.tickSeconds ?? subscriptionTickSeconds;
+      const reminderDefaultTimezone = config.reminder?.defaultTimezone?.trim() || "Asia/Shanghai";
 
       // 启动订阅调度器（尽力而为）。如果缺少 robotCode，则保留聊天能力，但禁用订阅推送。
       if (robotCode) {
@@ -175,6 +215,14 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
         startDingtalkWeatherSubscriptionScheduler({
           accountId: ctx.account.accountId,
           tickSeconds: subscriptionTickSeconds,
+          openApi,
+          abortSignal: ctx.abortSignal,
+          log: ctx.log,
+        });
+
+        startDingtalkReminderScheduler({
+          accountId: ctx.account.accountId,
+          tickSeconds: reminderTickSeconds,
           openApi,
           abortSignal: ctx.abortSignal,
           log: ctx.log,
@@ -258,6 +306,39 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
             rememberDingtalkUserForSession({ sessionKey: route.sessionKey, userId });
           }
 
+          // 提醒 fast-path：像“16:40 叫我一下”这种明确口令，直接创建提醒，避免模型误输出半截 JSON。
+          if (text && looksLikeReminderCommand(text)) {
+            try {
+              const toolFactory = createDingtalkReminderToolsFactory({
+                log: ctx.log,
+                defaultTimeZone: reminderDefaultTimezone,
+              });
+              const tools = toolFactory({
+                sessionKey: route.sessionKey,
+                agentAccountId: route.accountId,
+                messageChannel: "dingtalk",
+                config: cfg,
+                sandboxed: false,
+              } as any);
+              const createTool = tools.find((tool: any) => tool?.name === "dingtalk_reminder_create");
+              if (createTool) {
+                const result = await createTool.execute(`manual-${randomId()}`, { text }, ctx.abortSignal);
+                const replyText = Array.isArray(result?.content)
+                  ? result.content
+                      .filter((x: any) => x?.type === "text" && typeof x?.text === "string")
+                      .map((x: any) => String(x.text))
+                      .join("\n")
+                  : "";
+                if (replyText.trim()) {
+                  await replyViaSessionWebhook({ sessionWebhook, text: replyText });
+                  return;
+                }
+              }
+            } catch (err: any) {
+              ctx.log?.warn?.(`[dingtalk] reminder fast-path failed: ${String(err?.message ?? err)}`);
+            }
+          }
+
           // 防呆：当用户只回复 “2” 或 “2) xxx” 且当前会话存在待选择的候选项时，
           // 直接执行 pick_place 工具，避免模型生成不完整 JSON 导致工具调用失败。
           const selectionIndex = typeof text === "string" ? parseSelectionIndex(text) : null;
@@ -335,7 +416,8 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
             cfg,
             dispatcherOptions: {
               deliver: async (payload) => {
-                const replyText = payload.markdown || payload.text || "";
+                const raw = payload.markdown || payload.text || "";
+                const replyText = sanitizeAgentReply(raw);
                 if (!replyText.trim()) return;
                 await replyViaSessionWebhook({ sessionWebhook, text: replyText });
               },

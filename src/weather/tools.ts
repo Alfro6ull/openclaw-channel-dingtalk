@@ -1,16 +1,17 @@
 import type { AnyAgentTool, OpenClawPluginToolContext } from "openclaw/plugin-sdk";
 
 import { fetchForecast, formatForecastSummaryText, formatForecastText, geocodePlace } from "./open-meteo.js";
-import { parsePlaceAndDailyTime } from "./subscription/nlp.js";
-import { deleteDingtalkSubscription, getDingtalkSubscription, upsertDingtalkSubscription } from "./subscription/store.js";
-import type { DingtalkPlace, DingtalkWeatherSubscription } from "./subscription/types.js";
+import { parsePlaceAndDailyTime } from "../subscription/nlp.js";
+import { deleteDingtalkSubscription, getDingtalkSubscription, upsertDingtalkSubscription } from "../subscription/store.js";
+import type { DingtalkWeatherSubscription } from "../subscription/types.js";
+import type { DingtalkPlace } from "./types.js";
 import {
   clearWeatherPendingSelection,
   peekWeatherPendingSelection,
-  resolveDingtalkUserId,
   setWeatherPendingSelection,
   type WeatherPendingAction,
 } from "./session-state.js";
+import { resolveDingtalkUserId } from "../session/user.js";
 
 type LogLike = {
   info?: (msg: string) => void;

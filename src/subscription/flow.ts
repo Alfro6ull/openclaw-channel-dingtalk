@@ -1,6 +1,7 @@
-import type { DingtalkPlace, DingtalkWeatherSubscription } from "./types.js";
+import type { DingtalkWeatherSubscription } from "./types.js";
 import { deleteDingtalkSubscription, getDingtalkSubscription, upsertDingtalkSubscription } from "./store.js";
-import { fetchForecast, formatForecastSummaryText, formatForecastText, geocodePlace } from "../open-meteo.js";
+import type { DingtalkPlace } from "../weather/types.js";
+import { fetchForecast, formatForecastSummaryText, formatForecastText, geocodePlace } from "../weather/open-meteo.js";
 import { parsePlaceAndDailyTime } from "./nlp.js";
 
 type LogLike = {
