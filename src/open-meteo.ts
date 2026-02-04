@@ -2,6 +2,7 @@ import axios from "axios";
 
 import type { DingtalkPlace } from "./subscription-types.js";
 
+// 定义 Open-Meteo 的响应模型
 type OpenMeteoGeocodingResult = {
   name?: string;
   latitude?: number;
@@ -15,7 +16,9 @@ type OpenMeteoGeocodingResponse = {
   results?: OpenMeteoGeocodingResult[];
 };
 
+// 字符串 -> 地点列表
 export async function geocodePlace(params: { query: string; count?: number }): Promise<DingtalkPlace[]> {
+  // 清洗输入
   const q = params.query.trim();
   if (!q) return [];
 
@@ -83,6 +86,7 @@ export async function fetchForecast(params: { place: DingtalkPlace }): Promise<O
     "wind_direction_10m_dominant",
   ].join(",");
 
+  // IO请求 Open-Meteo
   const resp = await axios.get("https://api.open-meteo.com/v1/forecast", {
     params: {
       latitude: place.latitude,
@@ -144,9 +148,165 @@ function formatKeyValueLines(params: {
   return lines;
 }
 
+function formatPlaceBrief(place: DingtalkPlace): string {
+  const parts = place.label
+    .split(" · ")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length >= 2) return `${parts[0]}·${parts[1]}`;
+  if (parts.length >= 1) return parts[0];
+  return place.query?.trim() || place.label || "";
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function trimTrailingZeros(raw: string): string {
+  if (!raw.includes(".")) return raw;
+  return raw.replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function formatNumber(value: unknown, digits: number): string | null {
+  const n = toFiniteNumber(value);
+  if (n === null) return null;
+  return trimTrailingZeros(n.toFixed(digits));
+}
+
+function normalizeTempUnit(unit: unknown): string {
+  const u = typeof unit === "string" ? unit : "";
+  if (u.includes("°C") || u.includes("℃")) return "℃";
+  return u;
+}
+
+function formatTemp(value: unknown, unit: unknown, digits = 1): string | null {
+  const n = formatNumber(value, digits);
+  if (n === null) return null;
+  const u = normalizeTempUnit(unit);
+  return `${n}${u || ""}`.trim();
+}
+
+function formatTempRange(minValue: unknown, maxValue: unknown, unit: unknown): string | null {
+  const min = formatNumber(minValue, 1);
+  const max = formatNumber(maxValue, 1);
+  if (min === null || max === null) return null;
+  const u = normalizeTempUnit(unit);
+  return `${min}～${max}${u || ""}`.trim();
+}
+
+function formatPercent(value: unknown, digits = 0): string | null {
+  const n = formatNumber(value, digits);
+  if (n === null) return null;
+  return `${n}%`;
+}
+
+function pickIndexValue(source: Record<string, unknown> | undefined, key: string, index: number): unknown {
+  const raw = (source as any)?.[key];
+  if (Array.isArray(raw)) return raw[index];
+  return raw;
+}
+
+function formatIsoTimeHHmm(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const idx = value.indexOf("T");
+  if (idx < 0) return null;
+  const timePart = value.slice(idx + 1);
+  const m = timePart.match(/^(\d{2}):(\d{2})/);
+  if (!m) return null;
+  return `${m[1]}:${m[2]}`;
+}
+
+function uvLevelZh(uv: number): string {
+  if (!Number.isFinite(uv)) return "";
+  if (uv < 3) return "弱";
+  if (uv < 6) return "中等";
+  if (uv < 8) return "中等偏强";
+  if (uv < 11) return "强";
+  return "极强";
+}
+
+export function formatForecastSummaryText(params: {
+  place: DingtalkPlace;
+  forecast: OpenMeteoForecastPayload;
+  title?: string;
+  includeDetailHint?: boolean;
+}): string {
+  const { place, forecast } = params;
+
+  const current = forecast?.current as Record<string, unknown> | undefined;
+  const currentUnits = forecast?.current_units as Record<string, unknown> | undefined;
+  const daily = forecast?.daily as Record<string, unknown> | undefined;
+  const dailyUnits = forecast?.daily_units as Record<string, unknown> | undefined;
+
+  const placeBrief = formatPlaceBrief(place);
+  const title = params.title ?? "天气预览";
+  const header = placeBrief ? `${title}（${placeBrief}）` : title;
+
+  const lines: string[] = [header];
+
+  // 现在
+  const code = toFiniteNumber((current as any)?.weather_code);
+  const desc = code !== null ? wmoWeatherCodeToZh(Math.round(code)) : "";
+  const temp = formatTemp((current as any)?.temperature_2m, (currentUnits as any)?.temperature_2m, 1);
+  const feels = formatTemp(
+    (current as any)?.apparent_temperature,
+    (currentUnits as any)?.apparent_temperature,
+    1
+  );
+  const rh = formatPercent((current as any)?.relative_humidity_2m, 0);
+
+  const nowHead = desc && temp ? `${desc}，${temp}` : desc || temp || "";
+  const nowLine = nowHead || feels || rh
+    ? `现在：${nowHead}${feels ? `（体感 ${feels}）` : ""}${rh ? `，湿度 ${rh}` : ""}`
+    : "";
+  if (nowLine) lines.push(nowLine);
+
+  // 今天
+  const tMin = pickIndexValue(daily, "temperature_2m_min", 0);
+  const tMax = pickIndexValue(daily, "temperature_2m_max", 0);
+  const tUnit =
+    (dailyUnits as any)?.temperature_2m_max ??
+    (dailyUnits as any)?.temperature_2m_min ??
+    (currentUnits as any)?.temperature_2m;
+  const range = formatTempRange(tMin, tMax, tUnit);
+  const pop = formatPercent(pickIndexValue(daily, "precipitation_probability_max", 0), 0);
+
+  const uvRaw = pickIndexValue(daily, "uv_index_max", 0);
+  const uvNum = toFiniteNumber(uvRaw);
+  const uvValue = formatNumber(uvRaw, 0);
+  const uvLevel = uvNum === null ? "" : uvLevelZh(uvNum);
+  const uvText = uvValue ? `紫外线最高 ${uvValue}${uvLevel ? `（${uvLevel}）` : ""}` : "";
+
+  const todayParts: string[] = [];
+  if (range) todayParts.push(range);
+  if (pop) todayParts.push(`降雨概率 ${pop}`);
+  if (uvText) todayParts.push(uvText);
+  if (todayParts.length > 0) lines.push(`今天：${todayParts.join("，")}`);
+
+  // 日出/日落
+  const sunrise = formatIsoTimeHHmm(pickIndexValue(daily, "sunrise", 0));
+  const sunset = formatIsoTimeHHmm(pickIndexValue(daily, "sunset", 0));
+  if (sunrise && sunset) lines.push(`日出 ${sunrise} / 日落 ${sunset}`);
+  else if (sunrise) lines.push(`日出 ${sunrise}`);
+  else if (sunset) lines.push(`日落 ${sunset}`);
+
+  lines.push("数据源：Open-Meteo");
+  if (params.includeDetailHint !== false) {
+    lines.push("（回复“详情”可查看完整指标）");
+  }
+
+  return lines.join("\n").slice(0, 1200);
+}
+
 export function formatForecastText(params: {
   place: DingtalkPlace;
   forecast: OpenMeteoForecastPayload;
+  title?: string;
 }): string {
   const { place, forecast } = params;
 
@@ -161,7 +321,7 @@ export function formatForecastText(params: {
     Array.isArray(dailyTimes) && typeof dailyTimes[0] === "string" ? String(dailyTimes[0]) : "";
 
   const lines: string[] = [];
-  lines.push("天气订阅推送");
+  lines.push(params.title ?? "天气订阅推送");
   lines.push(`地点：${place.label}`);
   if (place.timezone) lines.push(`时区：${place.timezone}`);
   if (currentTime) lines.push(`本地时间：${currentTime}`);
@@ -170,6 +330,25 @@ export function formatForecastText(params: {
   const code = Number((current as any)?.weather_code);
   if (Number.isFinite(code)) {
     lines.push(`天气：${wmoWeatherCodeToZh(code)}（weather_code=${code}）`);
+  }
+
+  // 额外给一行更像“人”的摘要（不影响下面的完整字段输出）。
+  const summaryParts: string[] = [];
+  const t2m = (current as any)?.temperature_2m;
+  const feels = (current as any)?.apparent_temperature;
+  const rh = (current as any)?.relative_humidity_2m;
+  const wind = (current as any)?.wind_speed_10m;
+  const t2mUnit = (currentUnits as any)?.temperature_2m;
+  const feelsUnit = (currentUnits as any)?.apparent_temperature;
+  const rhUnit = (currentUnits as any)?.relative_humidity_2m;
+  const windUnit = (currentUnits as any)?.wind_speed_10m;
+
+  if (t2m !== undefined) summaryParts.push(`温度 ${formatValueWithUnit(t2m, t2mUnit)}`);
+  if (feels !== undefined) summaryParts.push(`体感 ${formatValueWithUnit(feels, feelsUnit)}`);
+  if (rh !== undefined) summaryParts.push(`湿度 ${formatValueWithUnit(rh, rhUnit)}`);
+  if (wind !== undefined) summaryParts.push(`风速 ${formatValueWithUnit(wind, windUnit)}`);
+  if (summaryParts.length > 0) {
+    lines.push(`摘要：${summaryParts.join("，")}`);
   }
 
   lines.push("");

@@ -234,12 +234,14 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
           });
 
           const rawBody = text || "(non-text message)";
+          const styleHint =
+            "请用自然、简洁的中文回复（不要使用emoji）；不要编造未发生的对话或系统日志；不确定就直接说不知道。";
           const body = core.channel.reply.formatAgentEnvelope({
             channel: "DingTalk",
             from: msg.senderNick || msg.senderStaffId || msg.senderId || "dingtalk-user",
             timestamp: Date.now(),
             envelope: core.channel.reply.resolveEnvelopeFormatOptions(cfg),
-            body: rawBody,
+            body: `${styleHint}\n\n${rawBody}`,
           });
 
           const ctxPayload = core.channel.reply.finalizeInboundContext({

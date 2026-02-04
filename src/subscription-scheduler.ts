@@ -1,5 +1,5 @@
 import { readDingtalkSubscriptionStore, writeDingtalkSubscriptionStore } from "./subscription-store.js";
-import { fetchForecast, formatForecastText } from "./open-meteo.js";
+import { fetchForecast, formatForecastSummaryText } from "./open-meteo.js";
 import type { DingtalkOpenApiClient } from "./dingtalk-openapi.js";
 import type { DingtalkWeatherSubscription } from "./subscription-types.js";
 
@@ -112,7 +112,7 @@ export function startDingtalkWeatherSubscriptionScheduler(params: {
           if (!isDueNow({ subscription: sub, localDateKey, nowMinutes })) continue;
 
           const forecast = await fetchForecast({ place: sub.place });
-          const text = formatForecastText({ place: sub.place, forecast });
+          const text = formatForecastSummaryText({ place: sub.place, forecast, title: "天气推送" });
           await params.openApi.sendTextToUser({ userId, text });
 
           store.subscriptions[userId] = {
@@ -142,4 +142,3 @@ export function startDingtalkWeatherSubscriptionScheduler(params: {
     { once: true }
   );
 }
-
