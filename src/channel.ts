@@ -12,7 +12,7 @@ import {
 } from "./weather/index.js";
 import { rememberDingtalkUserForSession } from "./session/user.js";
 import { peekWeatherPendingSelection } from "./weather/session-state.js";
-import { createDingtalkReminderToolsFactory, startDingtalkReminderScheduler } from "./reminder/index.js";
+import { startDingtalkReminderScheduler } from "./reminder/index.js";
 
 const meta = {
   id: "dingtalk",
@@ -63,23 +63,25 @@ function parseSelectionIndex(text: string): number | null {
   return n;
 }
 
-function looksLikeReminderCommand(text: string): boolean {
+function isLikelyToolCallJsonParseError(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  return /Unexpected end of JSON input/.test(t) || /after property value in JSON/.test(t) || /Expected .* in JSON/.test(t);
+}
 
-  // 天气相关交给 weather 处理，别误触发提醒。
-  if (/(天气|温度|几度|下雨|雨吗|湿度|风|紫外线|预报|详情)/.test(t)) return false;
-
-  // 关键词 + “看起来像时间”的线索（点/冒号/下午等）。
-  const hasReminderKeyword = /(提醒|叫我|闹钟|下班)/.test(t);
-  const hasTimeClue = /(\d{1,2}\s*:\s*\d{1,2})|点|凌晨|早上|上午|中午|下午|晚上|傍晚|夜里/.test(t);
-  return hasReminderKeyword && hasTimeClue;
+function isSilentReplyToken(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  // OpenClaw 约定：以 NO_REPLY 开头或结尾代表“静默回复”（不投递给用户）。
+  if (/^NO_REPLY(?=$|\W)/.test(t)) return true;
+  return /\bNO_REPLY\b\W*$/.test(t);
 }
 
 function sanitizeAgentReply(text: string): string {
   const t = text.trim();
   if (!t) return text;
-  if (/Unexpected end of JSON input/.test(t) || /after property value in JSON/.test(t) || /Expected .* in JSON/.test(t)) {
+  if (isSilentReplyToken(t)) return "";
+  if (isLikelyToolCallJsonParseError(t)) {
     return (
       "我刚才没把你的意思解析清楚。\n" +
       "你可以这样说：\n" +
@@ -264,6 +266,10 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
             return;
           }
 
+          // 当前只处理纯文本消息，避免卡片/文件等消息触发无意义的 LLM 调度。
+          // 后续如果要支持互动卡片，可在此处按 msgtype 分支处理。
+          if (msg.msgtype !== "text") return;
+
           const core = getDingtalkRuntime();
           const cfg = ctx.cfg as OpenClawConfig;
 
@@ -296,7 +302,7 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
             from: msg.senderNick || senderStaffId || senderId || "dingtalk-user",
             timestamp: Date.now(),
             envelope: core.channel.reply.resolveEnvelopeFormatOptions(cfg),
-            // 不要把规则/提示词塞进用户消息；规则通过 before_agent_start hook 注入。
+            // 不要把规则/提示词塞进用户消息；规则通过 skills/SKILL.md 注入。
             body: rawBody,
           });
 
@@ -304,39 +310,6 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
           const userId = senderStaffId || senderId || "";
           if (userId) {
             rememberDingtalkUserForSession({ sessionKey: route.sessionKey, userId });
-          }
-
-          // 提醒 fast-path：像“16:40 叫我一下”这种明确口令，直接创建提醒，避免模型误输出半截 JSON。
-          if (text && looksLikeReminderCommand(text)) {
-            try {
-              const toolFactory = createDingtalkReminderToolsFactory({
-                log: ctx.log,
-                defaultTimeZone: reminderDefaultTimezone,
-              });
-              const tools = toolFactory({
-                sessionKey: route.sessionKey,
-                agentAccountId: route.accountId,
-                messageChannel: "dingtalk",
-                config: cfg,
-                sandboxed: false,
-              } as any);
-              const createTool = tools.find((tool: any) => tool?.name === "dingtalk_reminder_create");
-              if (createTool) {
-                const result = await createTool.execute(`manual-${randomId()}`, { text }, ctx.abortSignal);
-                const replyText = Array.isArray(result?.content)
-                  ? result.content
-                      .filter((x: any) => x?.type === "text" && typeof x?.text === "string")
-                      .map((x: any) => String(x.text))
-                      .join("\n")
-                  : "";
-                if (replyText.trim()) {
-                  await replyViaSessionWebhook({ sessionWebhook, text: replyText });
-                  return;
-                }
-              }
-            } catch (err: any) {
-              ctx.log?.warn?.(`[dingtalk] reminder fast-path failed: ${String(err?.message ?? err)}`);
-            }
           }
 
           // 防呆：当用户只回复 “2” 或 “2) xxx” 且当前会话存在待选择的候选项时，
@@ -411,6 +384,7 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
 
           // core helper 会调用模型并产出回复（内部可能是流式 chunk）。
           // 这里为了稳定性，关闭 block-streaming：钉钉侧只收到一条最终回复。
+          let delivered = false;
           await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
             ctx: ctxPayload,
             cfg,
@@ -418,8 +392,19 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
               deliver: async (payload) => {
                 const raw = payload.markdown || payload.text || "";
                 const replyText = sanitizeAgentReply(raw);
-                if (!replyText.trim()) return;
-                await replyViaSessionWebhook({ sessionWebhook, text: replyText });
+                if (!replyText.trim()) {
+                  const reason = isSilentReplyToken(raw) ? "silent_token" : raw.trim() ? "empty_after_sanitize" : "empty";
+                  ctx.log?.debug?.(`[dingtalk] reply suppressed (reason=${reason}, rawLen=${raw.length})`);
+                  return;
+                }
+
+                ctx.log?.debug?.(`[dingtalk] delivering reply (len=${replyText.length})`);
+                try {
+                  await replyViaSessionWebhook({ sessionWebhook, text: replyText });
+                  delivered = true;
+                } catch (err: any) {
+                  ctx.log?.error?.(`[dingtalk] sessionWebhook deliver failed: ${String(err?.message ?? err)}`);
+                }
               },
               onError: (err, info) => {
                 ctx.log?.error?.(`[dingtalk] reply ${info.kind} failed: ${String(err)}`);
@@ -429,6 +414,19 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
               disableBlockStreaming: true,
             },
           });
+
+          // 如果模型选择 NO_REPLY / 空回复，用户会感觉“没反应”。给一个最小兜底提示。
+          if (!delivered) {
+            await replyViaSessionWebhook({
+              sessionWebhook,
+              text:
+                "我在。\n" +
+                "你可以这样说：\n" +
+                "- 成都天气 / 成都天气详情\n" +
+                "- 订阅 成都 10:20（每天推送天气）\n" +
+                "- 18:00 提醒我下班 / 四点四十叫我一下",
+            });
+          }
         } catch (err: any) {
           ctx.log?.error?.(`[dingtalk] failed to handle inbound message: ${String(err?.message ?? err)}`);
         }

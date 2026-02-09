@@ -4,7 +4,6 @@ import type { AnyAgentTool, OpenClawPluginToolContext } from "openclaw/plugin-sd
 
 import { resolveDingtalkUserId } from "../session/user.js";
 import { addDaysToYmd, formatZonedYmdHm, getZonedParts, zonedLocalToUtcMs } from "../time/zoned.js";
-import { parseReminderFromText } from "./nlp.js";
 import { addDingtalkReminder, cancelDingtalkReminder, listDingtalkReminders } from "./store.js";
 import type { DingtalkReminder } from "./types.js";
 
@@ -31,6 +30,31 @@ function toolText(text: string, details: unknown = {}) {
   };
 }
 
+function parseTimeHHmm(raw: string): { hour: number; minute: number } | null {
+  const s = raw.trim();
+  const m = s.match(/^(\d{1,2})\s*:\s*(\d{1,2})$/);
+  if (!m) return null;
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+  if (hour < 0 || hour > 23) return null;
+  if (minute < 0 || minute > 59) return null;
+  return { hour, minute };
+}
+
+function parseYmd(raw: string): { year: string; month: string; day: string } | null {
+  const s = raw.trim();
+  const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (!Number.isInteger(year) || year < 1970 || year > 2100) return null;
+  if (!Number.isInteger(month) || month < 1 || month > 12) return null;
+  if (!Number.isInteger(day) || day < 1 || day > 31) return null;
+  return { year: String(year), month: pad2(month), day: pad2(day) };
+}
+
 export function createDingtalkReminderToolsFactory(params: { log?: LogLike; defaultTimeZone?: string }) {
   return (toolCtx: OpenClawPluginToolContext): AnyAgentTool[] => {
     const configuredTimeZone =
@@ -47,13 +71,25 @@ export function createDingtalkReminderToolsFactory(params: { log?: LogLike; defa
     tools.push({
       name: "dingtalk_reminder_create",
       label: "创建提醒",
-      description: "创建一次性提醒（例如：四点四十叫我一下 / 18:00 提醒我下班）。默认按 Asia/Shanghai 解释时间。",
+      description:
+        "创建一次性提醒（由模型先理解用户意图并提取结构化时间）。默认按 Asia/Shanghai 解释时间。",
       parameters: {
         type: "object",
         additionalProperties: false,
-        required: ["text"],
+        required: ["time"],
         properties: {
-          text: { type: "string", description: "用户的原始提醒口令（建议直接传原句）。" },
+          time: { type: "string", description: "提醒时间（24小时制 HH:mm，例如：18:00 / 09:30）。" },
+          dayOffset: {
+            type: "integer",
+            minimum: 0,
+            maximum: 7,
+            description: "相对今天的天数偏移（可选；0=今天，1=明天）。不填则默认 0（若时间已过则顺延到明天）。",
+          },
+          date: {
+            type: "string",
+            description: "指定日期（可选，格式 YYYY-MM-DD）。如果提供 date，将严格按该日期创建提醒。",
+          },
+          message: { type: "string", description: "提醒内容（可选，例如：下班 / 开会）。" },
           userId: { type: "string", description: "钉钉用户ID（可选；不填则从会话上下文推断）。" },
           timeZone: { type: "string", description: "时区（可选，默认 Asia/Shanghai）。" },
         },
@@ -63,52 +99,67 @@ export function createDingtalkReminderToolsFactory(params: { log?: LogLike; defa
         const userId = pickUserId(toolCtx, obj);
         if (!userId) return toolText("我现在还无法识别你的钉钉用户ID（请先在钉钉私聊我发一句话，再重试）。", { ok: false });
 
-        const raw = typeof obj.text === "string" ? obj.text.trim() : "";
-        if (!raw) return toolText("请告诉我你想什么时候提醒（例如：16:40 叫我一下）。", { ok: false });
-
-        const timeZone = (typeof obj.timeZone === "string" && obj.timeZone.trim()) ? obj.timeZone.trim() : defaultTimeZone;
-        const parsed = parseReminderFromText(raw);
-        if (parsed.kind === "multiple_times") {
-          return toolText("我在一句话里识别到了多个时间点。为了避免歧义，请只说一个时间，例如：16:40 提醒我下班。", {
+        const timeRaw = typeof obj.time === "string" ? obj.time.trim() : "";
+        if (!timeRaw) return toolText("还差时间：请告诉我提醒时间（24小时制 HH:mm，例如：18:00 / 09:30）。", { ok: false });
+        const parsedTime = parseTimeHHmm(timeRaw);
+        if (!parsedTime) {
+          return toolText("时间格式不对：请用 24 小时制 HH:mm（例如：18:00 / 09:30）。", {
             ok: false,
-            reason: "multiple_times",
+            reason: "bad_time_format",
           });
-        }
-        if (parsed.kind === "need_time") {
-          const hint = parsed.message ? `要提醒的内容我先记为「${parsed.message}」。` : "";
-          return toolText(
-            [hint, "还差时间：请告诉我几点几分，例如：16:40 / 4点半 / 下午六点。"].filter(Boolean).join("\n"),
-            { ok: false, reason: "need_time" }
-          );
         }
 
         const now = new Date();
+        const timeZone = (typeof obj.timeZone === "string" && obj.timeZone.trim()) ? obj.timeZone.trim() : defaultTimeZone;
         const nowParts = getZonedParts(now, timeZone);
-        const baseYmd = addDaysToYmd(nowParts, parsed.dayOffset);
+
+        const explicitDateRaw = typeof obj.date === "string" ? obj.date.trim() : "";
+        const explicitDate = explicitDateRaw ? parseYmd(explicitDateRaw) : null;
+
+        const dayOffsetRaw = obj.dayOffset;
+        const dayOffset =
+          typeof dayOffsetRaw === "number" && Number.isInteger(dayOffsetRaw)
+            ? dayOffsetRaw
+            : typeof dayOffsetRaw === "string" && dayOffsetRaw.trim()
+              ? Number(dayOffsetRaw.trim())
+              : null;
+
+        if (dayOffset !== null && (!Number.isInteger(dayOffset) || dayOffset < 0 || dayOffset > 7)) {
+          return toolText("dayOffset 不合法：请使用 0～7 的整数（0=今天，1=明天）。", { ok: false, reason: "bad_day_offset" });
+        }
+
+        const baseYmd = explicitDate ?? addDaysToYmd(nowParts, dayOffset ?? 0);
         const desired = {
           timeZone,
           year: baseYmd.year,
           month: baseYmd.month,
           day: baseYmd.day,
-          hour: pad2(parsed.hour),
-          minute: pad2(parsed.minute),
+          hour: pad2(parsedTime.hour),
+          minute: pad2(parsedTime.minute),
           second: "00",
         };
 
-        // 如果用户没说“明天/后天”，且目标时间已过，则顺延到下一天。
-        const nowMinutes = Number(nowParts.hour) * 60 + Number(nowParts.minute);
-        const targetMinutes = parsed.hour * 60 + parsed.minute;
-        const shouldRollToNextDay = parsed.dayOffset === 0 && targetMinutes < nowMinutes;
-        if (shouldRollToNextDay) {
-          const rolled = addDaysToYmd(baseYmd, 1);
-          desired.year = rolled.year;
-          desired.month = rolled.month;
-          desired.day = rolled.day;
+        if (!explicitDate) {
+          // 没有指定 date：如果目标时间已过，则顺延到下一天。
+          const nowMinutes = Number(nowParts.hour) * 60 + Number(nowParts.minute);
+          const targetMinutes = parsedTime.hour * 60 + parsedTime.minute;
+          if (targetMinutes < nowMinutes) {
+            const rolled = addDaysToYmd(baseYmd, 1);
+            desired.year = rolled.year;
+            desired.month = rolled.month;
+            desired.day = rolled.day;
+          }
         }
 
         const scheduledAtMs = zonedLocalToUtcMs(desired);
+        if (explicitDate && scheduledAtMs < now.getTime() - 60_000) {
+          return toolText(`这个时间已经过去了：${formatZonedYmdHm(scheduledAtMs, timeZone)}。请换一个未来的时间。`, {
+            ok: false,
+            reason: "time_in_past",
+          });
+        }
         const localLabel = formatZonedYmdHm(scheduledAtMs, timeZone);
-        const message = parsed.message || "提醒你一下";
+        const message = (typeof obj.message === "string" && obj.message.trim()) ? obj.message.trim() : "提醒你一下";
 
         const reminder: DingtalkReminder = {
           id: crypto.randomUUID(),

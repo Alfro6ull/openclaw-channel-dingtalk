@@ -1,7 +1,6 @@
 import type { AnyAgentTool, OpenClawPluginToolContext } from "openclaw/plugin-sdk";
 
 import { fetchForecast, formatForecastSummaryText, formatForecastText, geocodePlace } from "./open-meteo.js";
-import { parsePlaceAndDailyTime } from "../subscription/nlp.js";
 import { deleteDingtalkSubscription, getDingtalkSubscription, upsertDingtalkSubscription } from "../subscription/store.js";
 import type { DingtalkWeatherSubscription } from "../subscription/types.js";
 import type { DingtalkPlace } from "./types.js";
@@ -35,6 +34,18 @@ function formatPlaceChoices(places: DingtalkPlace[]): string {
     lines.push(`${idx + 1}) ${place.label}${place.timezone ? `（${place.timezone}）` : ""}`);
   }
   return lines.join("\n").slice(0, 1200);
+}
+
+function parseTimeHHmm(raw: string): string | null {
+  const s = raw.trim();
+  const m = s.match(/^(\d{1,2})\s*:\s*(\d{1,2})$/);
+  if (!m) return null;
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+  if (hour < 0 || hour > 23) return null;
+  if (minute < 0 || minute > 59) return null;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
 function toolText(text: string, details: unknown = {}) {
@@ -238,14 +249,14 @@ export function createDingtalkWeatherToolsFactory(params: { log?: LogLike }) {
       name: "dingtalk_weather_subscribe",
       label: "订阅天气",
       description:
-        "创建/更新天气订阅：单一地点 + 每天一个时间点（按地点时区理解）。需要提供 place 与 time。",
+        "创建/更新天气订阅：单一地点 + 每天一个时间点（按地点时区理解）。需要提供 place 与 time（HH:mm）。",
       parameters: {
         type: "object",
         additionalProperties: false,
         required: ["place", "time"],
         properties: {
           place: { type: "string", description: "地点（例如：成都 / 上海浦东 / 北京朝阳）。" },
-          time: { type: "string", description: "每天推送时间（例如：10:20 / 8点半 / 早上八点）。" },
+          time: { type: "string", description: "每天推送时间（24小时制 HH:mm，例如：08:30 / 18:00）。" },
           userId: {
             type: "string",
             description: "钉钉用户ID（可选；不填则从会话上下文推断）。",
@@ -259,23 +270,22 @@ export function createDingtalkWeatherToolsFactory(params: { log?: LogLike }) {
 
         const placeRaw = typeof paramsObj.place === "string" ? paramsObj.place.trim() : "";
         const timeRaw = typeof paramsObj.time === "string" ? paramsObj.time.trim() : "";
-        const parsed = parsePlaceAndDailyTime(`${placeRaw} ${timeRaw}`);
-        if (parsed.kind !== "ok") {
-          return toolText("我没能从输入里解析出“地点 + 时间”。你可以这样说：成都 10:20 / 北京朝阳 每天8点半", {
+        const timeHHmm = parseTimeHHmm(timeRaw);
+        if (!timeHHmm) {
+          return toolText("时间格式不对：请用 24 小时制 HH:mm（例如：08:30 / 18:00）。", {
             ok: false,
-            reason: "parse_failed",
-            parsed,
+            reason: "bad_time_format",
           });
         }
 
         const resolved = await ensureSinglePlace({
           toolCtx,
-          query: parsed.placeQuery,
-          action: { kind: "subscribe", timeHHmm: parsed.timeHHmm },
+          query: placeRaw,
+          action: { kind: "subscribe", timeHHmm },
         });
 
         if (resolved.kind === "none") {
-          return toolText(`没找到地点：${parsed.placeQuery}\n你可以换个写法再试一次（例如：北京朝阳 / 深圳南山）。`, {
+          return toolText(`没找到地点：${placeRaw}\n你可以换个写法再试一次（例如：北京朝阳 / 深圳南山）。`, {
             ok: false,
             reason: "place_not_found",
           });
@@ -286,8 +296,8 @@ export function createDingtalkWeatherToolsFactory(params: { log?: LogLike }) {
             ok: false,
             status: "need_user_choice",
             kind: "place",
-            query: parsed.placeQuery,
-            schedule: { type: "daily", time: parsed.timeHHmm },
+            query: placeRaw,
+            schedule: { type: "daily", time: timeHHmm },
             choices: resolved.places.map((p, idx) => ({
               index: idx + 1,
               label: p.label,
@@ -296,7 +306,7 @@ export function createDingtalkWeatherToolsFactory(params: { log?: LogLike }) {
               longitude: p.longitude,
             })),
             nextTool: "dingtalk_weather_pick_place",
-            note: `地点存在歧义。请把 choices 列表展示给用户并询问编号；用户选定后，再继续订阅（每天 ${parsed.timeHHmm}）。不要代替用户选择，也不要只回复数字。`,
+            note: `地点存在歧义。请把 choices 列表展示给用户并询问编号；用户选定后，再继续订阅（每天 ${timeHHmm}）。不要代替用户选择，也不要只回复数字。`,
           });
         }
 
@@ -304,7 +314,7 @@ export function createDingtalkWeatherToolsFactory(params: { log?: LogLike }) {
           accountId,
           userId,
           place: resolved.place,
-          timeHHmm: parsed.timeHHmm,
+          timeHHmm,
         });
 
         const preview = await fetchSummary(resolved.place, "天气预览");

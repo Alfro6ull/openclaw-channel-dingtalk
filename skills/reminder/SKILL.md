@@ -16,14 +16,15 @@ metadata: {"openclaw":{"emoji":"⏰"}}
 
 ## 可用工具
 
-- `dingtalk_reminder_create(text, userId?, timeZone?)`：创建提醒（推荐直接传用户原句）
+- `dingtalk_reminder_create(time, message?, dayOffset?, date?, userId?, timeZone?)`：创建提醒（你需要先从用户话里提取结构化时间）
 - `dingtalk_reminder_list(userId?)`：查看提醒
 - `dingtalk_reminder_cancel(id, userId?)`：取消提醒
 
 ## 对话规则（务必遵守）
 
 1) 优先确保时间明确：
-   - 如果用户没说清“几点几分”，先追问时间（例如：16:40 / 4点半 / 下午六点）。
+   - 如果用户没说清“几点几分”，先追问时间（例如：18:00 / 09:30）。
+   - 如果用户说“6点”但无法判断早晚，先追问是“06:00 还是 18:00”。
 
 2) 默认时区：
    - 若用户没明确时区，默认按 `Asia/Shanghai` 解释时间。
@@ -31,3 +32,7 @@ metadata: {"openclaw":{"emoji":"⏰"}}
 3) 输出要自然简洁：
    - 创建成功后告诉用户触发时间与提醒内容，并提示“我的提醒 / 取消提醒 <id>”。
 
+4) 调用工具时务必做归一化：
+   - `time` 一律使用 24 小时制 `HH:mm`（例如把“下午六点”归一化为 `18:00`）
+   - 如果用户说“明天/后天”，用 `dayOffset` 表示（1/2）。
+   - 如果用户给了明确日期（例如 2026-02-10），用 `date`（YYYY-MM-DD）而不是 dayOffset。
