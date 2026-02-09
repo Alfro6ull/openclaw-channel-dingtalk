@@ -4,7 +4,14 @@ import type { AnyAgentTool, OpenClawPluginToolContext } from "openclaw/plugin-sd
 
 import { resolveDingtalkUserId } from "../session/user.js";
 import { addDaysToYmd, formatZonedYmdHm, getZonedParts, zonedLocalToUtcMs } from "../time/zoned.js";
-import { addDingtalkReminder, cancelDingtalkReminder, listDingtalkReminders } from "./store.js";
+import {
+  ackDingtalkReminder,
+  addDingtalkReminder,
+  cancelDingtalkReminder,
+  getDingtalkReminder,
+  listDingtalkReminders,
+  resolveLastSentReminderId,
+} from "./store.js";
 import type { DingtalkReminder } from "./types.js";
 
 type LogLike = {
@@ -228,6 +235,128 @@ export function createDingtalkReminderToolsFactory(params: { log?: LogLike; defa
 
         const ok = await cancelDingtalkReminder({ id, userId, accountId });
         return toolText(ok ? "已取消提醒。" : "没找到这条提醒，可能已触发或已取消。", { ok: true, canceled: ok });
+      },
+    });
+
+    tools.push({
+      name: "dingtalk_reminder_receipt",
+      label: "提醒回执",
+      description:
+        "用户收到提醒后，可用本工具标记完成/延后/取消。若用户未提供 id，可自动作用于该用户最近一次触发的提醒。",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["action"],
+        properties: {
+          action: {
+            type: "string",
+            enum: ["done", "snoozed", "canceled"],
+            description: "回执动作：done=完成，snoozed=延后，canceled=取消。",
+          },
+          id: { type: "string", description: "提醒 id（可选）。不填则使用最近一次触发的提醒。" },
+          snoozeMinutes: {
+            type: "integer",
+            minimum: 1,
+            maximum: 12 * 60,
+            description: "延后分钟数（当 action=snoozed 时必填；例如 10 表示延后10分钟）。",
+          },
+          userId: { type: "string", description: "钉钉用户ID（可选；不填则从会话上下文推断）。" },
+          timeZone: { type: "string", description: "时区（可选，默认 Asia/Shanghai）。" },
+        },
+      },
+      execute: async (_toolCallId, input) => {
+        const obj = (input ?? {}) as Record<string, unknown>;
+        const userId = pickUserId(toolCtx, obj);
+        if (!userId) return toolText("我现在还无法识别你的钉钉用户ID（请先在钉钉私聊我发一句话，再重试）。", { ok: false });
+
+        const action = typeof obj.action === "string" ? obj.action.trim() : "";
+        if (!action) return toolText("还差回执动作：done / snoozed / canceled。", { ok: false });
+
+        const explicitId = typeof obj.id === "string" ? obj.id.trim() : "";
+        const id =
+          explicitId ||
+          (await resolveLastSentReminderId({ userId, accountId })) ||
+          "";
+        if (!id) {
+          return toolText("我没找到你最近一次触发的提醒。你可以发送“我的提醒”查看 id，或在回执里带上 id。", {
+            ok: false,
+            reason: "missing_id",
+          });
+        }
+
+        const existing = await getDingtalkReminder({ id, accountId });
+        if (!existing || existing.userId !== userId) {
+          return toolText("没找到这条提醒（可能已过期或不属于你）。你可以发送“我的提醒”确认 id。", { ok: false });
+        }
+
+        const nowMs = Date.now();
+        const timeZone =
+          (typeof obj.timeZone === "string" && obj.timeZone.trim()) ? obj.timeZone.trim() : existing.timeZone || defaultTimeZone;
+
+        if (action === "done") {
+          const ok = await ackDingtalkReminder({
+            id,
+            userId,
+            action: "done",
+            acknowledgedAtMs: nowMs,
+            accountId,
+          });
+          return toolText(ok ? "收到～我记下你已完成。" : "更新失败了，请稍后再试。", { ok });
+        }
+
+        if (action === "canceled") {
+          const ok = await ackDingtalkReminder({
+            id,
+            userId,
+            action: "canceled",
+            acknowledgedAtMs: nowMs,
+            accountId,
+          });
+          return toolText(ok ? "好的，我已取消这条提醒。" : "更新失败了，请稍后再试。", { ok });
+        }
+
+        // snoozed
+        const minutesRaw = obj.snoozeMinutes;
+        const minutes =
+          typeof minutesRaw === "number" && Number.isInteger(minutesRaw)
+            ? minutesRaw
+            : typeof minutesRaw === "string" && minutesRaw.trim()
+              ? Number(minutesRaw.trim())
+              : NaN;
+        if (!Number.isInteger(minutes) || minutes < 1 || minutes > 12 * 60) {
+          return toolText("延后时间不对：请提供 snoozeMinutes（1～720）。例如延后10分钟：snoozeMinutes=10。", {
+            ok: false,
+            reason: "bad_snooze_minutes",
+          });
+        }
+
+        const scheduledAtMs = nowMs + minutes * 60_000;
+        const localLabel = formatZonedYmdHm(scheduledAtMs, timeZone);
+        const reminder: DingtalkReminder = {
+          id: crypto.randomUUID(),
+          userId,
+          text: existing.text,
+          scheduledAtMs,
+          timeZone,
+          createdAtMs: nowMs,
+          snoozedFromId: existing.id,
+        };
+        await addDingtalkReminder({ reminder, accountId });
+        const ok = await ackDingtalkReminder({
+          id,
+          userId,
+          action: "snoozed",
+          acknowledgedAtMs: nowMs,
+          accountId,
+          nextReminderId: reminder.id,
+        });
+
+        return toolText(
+          ok
+            ? `好的，我帮你延后 ${minutes} 分钟：新的提醒时间是 ${localLabel}（新 id=${reminder.id}）。`
+            : "延后成功了，但更新回执状态失败了（不影响新提醒）。",
+          { ok, reminder }
+        );
       },
     });
 

@@ -5,6 +5,7 @@ import { dingtalkPlugin } from "./src/channel.js";
 import { setDingtalkRuntime } from "./src/runtime.js";
 import { createDingtalkWeatherToolsFactory } from "./src/weather/index.js";
 import { createDingtalkReminderToolsFactory } from "./src/reminder/index.js";
+import { createDingtalkCalendarToolsFactory } from "./src/calendar/index.js";
 
 const plugin = {
   id: "dingtalk",
@@ -17,6 +18,7 @@ const plugin = {
     api.registerChannel({ plugin: dingtalkPlugin });
     api.registerTool(createDingtalkWeatherToolsFactory({ log: api.logger }));
     api.registerTool(createDingtalkReminderToolsFactory({ log: api.logger }));
+    api.registerTool(createDingtalkCalendarToolsFactory({ log: api.logger }));
   },
 };
 

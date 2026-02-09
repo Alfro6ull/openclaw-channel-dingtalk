@@ -13,6 +13,7 @@ import {
 import { rememberDingtalkUserForSession } from "./session/user.js";
 import { peekWeatherPendingSelection } from "./weather/session-state.js";
 import { startDingtalkReminderScheduler } from "./reminder/index.js";
+import { startDingtalkCalendarReminderScheduler } from "./calendar/scheduler.js";
 
 const meta = {
   id: "dingtalk",
@@ -165,6 +166,14 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
             defaultTimezone: { type: "string" },
           },
         },
+        calendar: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            tickSeconds: { type: "integer", minimum: 30, maximum: 3600 },
+            windowHours: { type: "integer", minimum: 1, maximum: 168 },
+          },
+        },
         connectionMode: { type: "string", enum: ["stream", "webhook"] },
         webhookPath: { type: "string" },
         webhookPort: { type: "integer", minimum: 1 },
@@ -205,6 +214,8 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
       const subscriptionTickSeconds = config.subscription?.tickSeconds;
       const reminderTickSeconds = config.reminder?.tickSeconds ?? subscriptionTickSeconds;
       const reminderDefaultTimezone = config.reminder?.defaultTimezone?.trim() || "Asia/Shanghai";
+      const calendarTickSeconds = config.calendar?.tickSeconds;
+      const calendarWindowHours = config.calendar?.windowHours;
 
       // 启动订阅调度器（尽力而为）。如果缺少 robotCode，则保留聊天能力，但禁用订阅推送。
       if (robotCode) {
@@ -225,6 +236,15 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingtalkAccount> = {
         startDingtalkReminderScheduler({
           accountId: ctx.account.accountId,
           tickSeconds: reminderTickSeconds,
+          openApi,
+          abortSignal: ctx.abortSignal,
+          log: ctx.log,
+        });
+
+        startDingtalkCalendarReminderScheduler({
+          accountId: ctx.account.accountId,
+          tickSeconds: calendarTickSeconds,
+          windowHours: calendarWindowHours,
           openApi,
           abortSignal: ctx.abortSignal,
           log: ctx.log,

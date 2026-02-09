@@ -16,12 +16,56 @@ type AccessTokenResponse = {
   expireIn?: number;
 };
 
+type CalendarListResponse = {
+  response?: {
+    calendars?: Array<{
+      calendarId?: string;
+      calendarName?: string;
+      calendarType?: string;
+      timeZone?: string;
+    }>;
+  };
+  calendars?: Array<{
+    calendarId?: string;
+    calendarName?: string;
+    calendarType?: string;
+    timeZone?: string;
+  }>;
+};
+
+type EventsViewResponse = {
+  events?: Array<{
+    id?: string;
+    summary?: string;
+    isAllDay?: boolean;
+    start?: { dateTime?: string; timeZone?: string };
+    end?: { dateTime?: string; timeZone?: string };
+    location?: { displayName?: string };
+  }>;
+  nextToken?: string;
+  response?: {
+    events?: Array<{
+      id?: string;
+      summary?: string;
+      isAllDay?: boolean;
+      start?: { dateTime?: string; timeZone?: string };
+      end?: { dateTime?: string; timeZone?: string };
+      location?: { displayName?: string };
+    }>;
+    nextToken?: string;
+  };
+};
+
 export class DingtalkOpenApiClient {
   private accessToken: string | null = null;
   private expiresAtMs: number = 0;
   private inflightTokenPromise: Promise<string> | null = null;
 
   constructor(private readonly opts: DingtalkOpenApiClientOptions) {}
+
+  private apiHost(): string {
+    return "https://api.dingtalk.com";
+  }
 
   private async fetchAccessToken(): Promise<string> {
     const { clientId, clientSecret } = this.opts;
@@ -58,6 +102,28 @@ export class DingtalkOpenApiClient {
     return this.inflightTokenPromise;
   }
 
+  private async request<T>(params: {
+    method: "GET" | "POST";
+    path: string;
+    query?: Record<string, string | number | boolean | undefined>;
+    body?: unknown;
+  }): Promise<T> {
+    const accessToken = await this.getAccessToken();
+    const url = `${this.apiHost()}${params.path}`;
+    const resp = await axios.request<T>({
+      method: params.method,
+      url,
+      params: params.query,
+      data: params.body,
+      timeout: 8000,
+      headers: {
+        "x-acs-dingtalk-access-token": accessToken,
+        "content-type": "application/json",
+      },
+    });
+    return resp.data;
+  }
+
   async sendTextToUsers(params: { userIds: string[]; text: string }): Promise<void> {
     const { robotCode } = this.opts;
     const accessToken = await this.getAccessToken();
@@ -87,5 +153,63 @@ export class DingtalkOpenApiClient {
 
   async sendTextToUser(params: { userId: string; text: string }): Promise<void> {
     await this.sendTextToUsers({ userIds: [params.userId], text: params.text });
+  }
+
+  async listCalendars(params: { userId: string }): Promise<{
+    calendars: Array<{ calendarId: string; calendarName?: string; calendarType?: string; timeZone?: string }>;
+  }> {
+    const userId = params.userId.trim();
+    if (!userId) return { calendars: [] };
+
+    const data = await this.request<CalendarListResponse>({
+      method: "GET",
+      path: `/v1.0/calendar/users/${encodeURIComponent(userId)}/calendars`,
+    });
+    const calendars = (data.response?.calendars ?? data.calendars ?? [])
+      .map((c) => ({
+        calendarId: String(c.calendarId || "").trim(),
+        calendarName: c.calendarName,
+        calendarType: c.calendarType,
+        timeZone: c.timeZone,
+      }))
+      .filter((c) => c.calendarId);
+    return { calendars };
+  }
+
+  async listEventsView(params: {
+    userId: string;
+    calendarId: string;
+    timeMin: string;
+    timeMax: string;
+    nextToken?: string;
+    maxResults?: number;
+  }): Promise<{
+    events: Array<{
+      id?: string;
+      summary?: string;
+      isAllDay?: boolean;
+      start?: { dateTime?: string; timeZone?: string };
+      end?: { dateTime?: string; timeZone?: string };
+      location?: { displayName?: string };
+    }>;
+    nextToken?: string;
+  }> {
+    const userId = params.userId.trim();
+    const calendarId = params.calendarId.trim();
+    if (!userId || !calendarId) return { events: [] };
+
+    const data = await this.request<EventsViewResponse>({
+      method: "GET",
+      path: `/v1.0/calendar/users/${encodeURIComponent(userId)}/calendars/${encodeURIComponent(calendarId)}/eventsview`,
+      query: {
+        timeMin: params.timeMin,
+        timeMax: params.timeMax,
+        nextToken: params.nextToken,
+        maxResults: params.maxResults,
+      },
+    });
+    const events = (data.response?.events ?? data.events ?? []) ?? [];
+    const nextToken = data.response?.nextToken ?? data.nextToken;
+    return { events, nextToken };
   }
 }

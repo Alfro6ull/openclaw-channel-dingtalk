@@ -4,9 +4,14 @@ import os from "node:os";
 import path from "node:path";
 
 import { getDingtalkRuntime } from "../runtime.js";
-import type { DingtalkReminder, DingtalkReminderStoreV1 } from "./types.js";
+import type {
+  DingtalkReminder,
+  DingtalkReminderAckAction,
+  DingtalkReminderStoreV1,
+  DingtalkReminderStoreV2,
+} from "./types.js";
 
-const STORE_VERSION = 1 as const;
+const STORE_VERSION = 2 as const;
 
 export type DingtalkReminderStorePathOptions = {
   accountId?: string;
@@ -37,25 +42,41 @@ export function resolveDingtalkReminderStorePath(params: DingtalkReminderStorePa
   return path.join(stateDir, "dingtalk", filename);
 }
 
-function emptyStore(): DingtalkReminderStoreV1 {
-  return { version: STORE_VERSION, reminders: {} };
+function emptyStore(): DingtalkReminderStoreV2 {
+  return { version: STORE_VERSION, reminders: {}, lastSentReminderIdByUser: {} };
 }
 
-function safeParseStore(raw: string): DingtalkReminderStoreV1 | null {
+function safeParseStore(raw: string): DingtalkReminderStoreV2 | null {
   try {
-    const parsed = JSON.parse(raw) as Partial<DingtalkReminderStoreV1>;
-    if (parsed?.version !== STORE_VERSION) return null;
+    const parsed = JSON.parse(raw) as Partial<DingtalkReminderStoreV1 & DingtalkReminderStoreV2>;
+    if (!parsed || typeof parsed !== "object") return null;
     if (!parsed.reminders || typeof parsed.reminders !== "object") return null;
+
+    if (parsed.version === 1) {
+      return {
+        version: STORE_VERSION,
+        reminders: parsed.reminders as Record<string, DingtalkReminder>,
+        lastSentReminderIdByUser: {},
+      };
+    }
+
+    if (parsed.version !== STORE_VERSION) return null;
     return {
       version: STORE_VERSION,
       reminders: parsed.reminders as Record<string, DingtalkReminder>,
+      lastSentReminderIdByUser:
+        parsed.lastSentReminderIdByUser && typeof parsed.lastSentReminderIdByUser === "object"
+          ? (parsed.lastSentReminderIdByUser as Record<string, string>)
+          : {},
     };
   } catch {
     return null;
   }
 }
 
-export async function readDingtalkReminderStore(params: DingtalkReminderStorePathOptions): Promise<DingtalkReminderStoreV1> {
+export async function readDingtalkReminderStore(
+  params: DingtalkReminderStorePathOptions
+): Promise<DingtalkReminderStoreV2> {
   const filePath = resolveDingtalkReminderStorePath(params);
   try {
     const raw = await fs.readFile(filePath, "utf-8");
@@ -68,7 +89,7 @@ export async function readDingtalkReminderStore(params: DingtalkReminderStorePat
 }
 
 export async function writeDingtalkReminderStore(params: {
-  store: DingtalkReminderStoreV1;
+  store: DingtalkReminderStoreV2;
   accountId?: string;
   env?: NodeJS.ProcessEnv;
   homedir?: () => string;
@@ -107,8 +128,70 @@ export async function cancelDingtalkReminder(params: {
   const existing = store.reminders[params.id];
   if (!existing) return false;
   if (existing.userId !== params.userId) return false;
-  delete store.reminders[params.id];
+  const nowMs = Date.now();
+  store.reminders[params.id] = {
+    ...existing,
+    canceledAtMs: existing.canceledAtMs ?? nowMs,
+    acknowledgedAtMs: existing.acknowledgedAtMs ?? nowMs,
+    ackAction: existing.ackAction ?? "canceled",
+  };
   await writeDingtalkReminderStore({ store, accountId: params.accountId });
   return true;
 }
 
+export async function markReminderSent(params: {
+  id: string;
+  userId: string;
+  sentAtMs: number;
+  accountId?: string;
+}): Promise<void> {
+  const store = await readDingtalkReminderStore({ accountId: params.accountId });
+  const existing = store.reminders[params.id];
+  if (!existing) return;
+  if (existing.userId !== params.userId) return;
+  store.reminders[params.id] = { ...existing, sentAtMs: params.sentAtMs };
+  store.lastSentReminderIdByUser[params.userId] = params.id;
+  await writeDingtalkReminderStore({ store, accountId: params.accountId });
+}
+
+export async function resolveLastSentReminderId(params: {
+  userId: string;
+  accountId?: string;
+}): Promise<string | null> {
+  const store = await readDingtalkReminderStore({ accountId: params.accountId });
+  const id = store.lastSentReminderIdByUser[params.userId];
+  return typeof id === "string" && id.trim() ? id.trim() : null;
+}
+
+export async function getDingtalkReminder(params: { id: string; accountId?: string }): Promise<DingtalkReminder | null> {
+  const store = await readDingtalkReminderStore({ accountId: params.accountId });
+  return store.reminders[params.id] ?? null;
+}
+
+export async function ackDingtalkReminder(params: {
+  id: string;
+  userId: string;
+  action: DingtalkReminderAckAction;
+  acknowledgedAtMs: number;
+  accountId?: string;
+  nextReminderId?: string;
+}): Promise<boolean> {
+  const store = await readDingtalkReminderStore({ accountId: params.accountId });
+  const existing = store.reminders[params.id];
+  if (!existing) return false;
+  if (existing.userId !== params.userId) return false;
+
+  const updated: DingtalkReminder = {
+    ...existing,
+    acknowledgedAtMs: params.acknowledgedAtMs,
+    ackAction: params.action,
+    nextReminderId: params.nextReminderId ?? existing.nextReminderId,
+  };
+  if (params.action === "canceled") {
+    updated.canceledAtMs = updated.canceledAtMs ?? params.acknowledgedAtMs;
+  }
+
+  store.reminders[params.id] = updated;
+  await writeDingtalkReminderStore({ store, accountId: params.accountId });
+  return true;
+}

@@ -1,16 +1,22 @@
 # openclaw-channel-dingtalk
 
-  可用功能：
-    - webchat
-    - 天气查询 / 天气订阅
-    - 一次性提醒（闹钟）
+This project was developed with the assistance of ChatGPT-5.2
+
+> 已实现功能
+>
+> 天气订阅
+>
+> 提醒器 提醒回执与延后
+>
+> 钉钉日程读取与提醒
 
 ## 安装
 
 - 方式 A：
-  - `openclaw plugins install https://github.com/alfro6ull-collab/openclaw-channel-dingtalk.git`
 
+  - `openclaw plugins install https://github.com/alfro6ull-collab/openclaw-channel-dingtalk.git`
 - 方式 B：先 clone，再 link 本地目录
+
   - `git clone git@github.com:alfro6ull-collab/openclaw-channel-dingtalk.git`
   - `cd openclaw-channel-dingtalk`
   - `openclaw plugins install -l .`
@@ -26,6 +32,7 @@
 **stream模式**
 
 ### 权限配置和事件订阅
+
 按需配置
 
 ```yaml
@@ -58,40 +65,9 @@ channels:
 - （可选）`openclaw config set channels.dingtalk.robotCode "dingxxxxxxxxxxxxxxxx"`
   改完配置后需要重启 gateway（不管是 docker 还是本机跑）才能生效。
 
-## 使用
+## 基础权限
 
-### 天气订阅
-目前是单一地点单一时间
-
-1. 私聊发送：`订阅天气`
-2. 按提示发送：`目标地区 + 推送时间`
-  示例（支持自然语言）：
-  - `北京 每天8点`
-  - `上海浦东 18:30`
-  - `深圳南山 早上八点半`
-
-> 说明：时间会按“地点所在时区”理解与触发（由 Open‑Meteo 地理编码返回）。
-
-### 查看/取消订阅
-
-- 查看：发送 `我的订阅` 或 `查看订阅`
-- 取消：发送 `取消订阅` 或 `退订`
-- 退出订阅流程：发送 `取消`
-
-### 提醒（闹钟）
-
-- 创建提醒（支持自然语言）：
-  - `四点四十的时候叫我一下`
-  - `18:00 提醒我下班`
-  - `明天 9点 提醒我开会`
-- 查看提醒：发送 `我的提醒`
-- 取消提醒：发送 `取消提醒 <id>`（id 会在“我的提醒”里展示）
-
-## 权限（补充说明）
-
-本插件需要两类能力：
-
-1) **Stream 接入**（接收消息/事件推送）  
+1) **Stream 接入**（接收消息/事件推送）
 2) **OpenAPI 主动发消息**（用于“订阅定时推送 / 到点提醒”，不能依赖 sessionWebhook）
 
 - 获取企业内部应用 `accessToken`（用于 OpenAPI 调用）

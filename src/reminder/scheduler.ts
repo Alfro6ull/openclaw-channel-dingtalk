@@ -43,9 +43,17 @@ export function startDingtalkReminderScheduler(params: {
         if (!isDue({ nowMs, scheduledAtMs: r.scheduledAtMs, maxOverdueMs })) continue;
         try {
           const local = formatZonedYmdHm(r.scheduledAtMs, r.timeZone);
-          const text = [`提醒（${local}）`, r.text || "时间到啦～"].join("\n").slice(0, 3500);
+          const text = [
+            `提醒（${local}）`,
+            r.text || "时间到啦～",
+            "",
+            `你可以回复：完成 / 延后10分钟 / 取消（或带上 id=${r.id}）`,
+          ]
+            .join("\n")
+            .slice(0, 3500);
           await params.openApi.sendTextToUser({ userId: r.userId, text });
           store.reminders[r.id] = { ...r, sentAtMs: nowMs };
+          store.lastSentReminderIdByUser[r.userId] = r.id;
           changed = true;
         } catch (err: any) {
           params.log?.warn?.(`[dingtalk] reminder push failed (id=${r.id} user=${r.userId}): ${String(err?.message ?? err)}`);
@@ -90,4 +98,3 @@ export function startDingtalkReminderScheduler(params: {
     { once: true }
   );
 }
-

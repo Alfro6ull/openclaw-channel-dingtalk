@@ -19,6 +19,7 @@ metadata: {"openclaw":{"emoji":"⏰"}}
 - `dingtalk_reminder_create(time, message?, dayOffset?, date?, userId?, timeZone?)`：创建提醒（你需要先从用户话里提取结构化时间）
 - `dingtalk_reminder_list(userId?)`：查看提醒
 - `dingtalk_reminder_cancel(id, userId?)`：取消提醒
+- `dingtalk_reminder_receipt(action, id?, snoozeMinutes?, userId?, timeZone?)`：提醒回执（完成/延后/取消）
 
 ## 对话规则（务必遵守）
 
@@ -31,6 +32,7 @@ metadata: {"openclaw":{"emoji":"⏰"}}
 
 3) 输出要自然简洁：
    - 创建成功后告诉用户触发时间与提醒内容，并提示“我的提醒 / 取消提醒 <id>”。
+   - 到点提醒推送后，用户可能会回复“完成 / 延后10分钟 / 取消”，你应调用 `dingtalk_reminder_receipt` 处理回执。
 
 4) 调用工具时务必做归一化：
    - `time` 一律使用 24 小时制 `HH:mm`（例如把“下午六点”归一化为 `18:00`）
